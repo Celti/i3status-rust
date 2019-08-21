@@ -1,5 +1,3 @@
-use std::ffi::OsStr;
-use std::process::Command;
 use std::time::{Duration, Instant};
 use crossbeam_channel::Sender;
 use std::thread;
@@ -8,12 +6,14 @@ use std::boxed::Box;
 use crate::config::Config;
 use crate::errors::*;
 use crate::scheduler::Task;
-use crate::input::I3BarEvent;
+use crate::input::{I3BarEvent, MouseButton};
 use crate::block::{Block, ConfigBlock};
 use crate::de::deserialize_duration;
 use crate::widgets::rotatingtext::RotatingTextWidget;
 use crate::widgets::button::ButtonWidget;
 use crate::widget::{I3BarWidget, State};
+use crate::subprocess;
+use crate::util::OptionDeref;
 
 use crate::blocks::dbus::{arg, stdintf, BusType, Connection, ConnectionItem, Message};
 use crate::blocks::dbus::arg::{Array, RefArg};
@@ -123,21 +123,21 @@ impl ConfigBlock for Music {
             match &*button {
                 "play" => {
                     play = Some(
-                        ButtonWidget::new(config.clone(), "play")
+                        ButtonWidget::new(config.clone(), "PlayPause")
                             .with_icon("music_play")
                             .with_state(State::Info),
                     )
                 }
                 "next" => {
                     next = Some(
-                        ButtonWidget::new(config.clone(), "next")
+                        ButtonWidget::new(config.clone(), "Next")
                             .with_icon("music_next")
                             .with_state(State::Info),
                     )
                 }
                 "prev" => {
                     prev = Some(
-                        ButtonWidget::new(config.clone(), "prev")
+                        ButtonWidget::new(config.clone(), "Previous")
                             .with_icon("music_prev")
                             .with_state(State::Info),
                     )
@@ -246,38 +246,29 @@ impl Block for Music {
     }
 
     fn click(&mut self, event: &I3BarEvent) -> Result<()> {
-        if let Some(ref name) = event.name {
-            let action = match name as &str {
-                "play" => "PlayPause",
-                "next" => "Next",
-                "prev" => "Previous",
-                _ => "",
-            };
-            if action != "" {
-                let m = Message::new_method_call(
-                    self.player.as_ref().unwrap(),
-                    "/org/mpris/MediaPlayer2",
-                    "org.mpris.MediaPlayer2.Player",
-                    action,
-                ).block_error("music", "failed to create D-Bus method call")?;
-                self.dbus_conn
-                    .send(m)
-                    .block_error("music", "failed to call method via D-Bus")
-                    .map(|_| ())
-            } else {
-                if name == "on_collapsed_click" && self.on_collapsed_click.is_some() {
-                    let command = self.on_collapsed_click.clone().unwrap();
-                    let command_broken: Vec<&str> = command.split_whitespace().collect();
-                    let mut itr = command_broken.iter();
-                    let mut _cmd = Command::new(OsStr::new(&itr.next().unwrap()))
-                        .args(itr)
-                        .spawn();
+        if let MouseButton::Left = event.button {
+            match event.name.as_deref() {
+                Some("on_collapsed_click") => {
+                    if let Some(ref cmd) = self.on_collapsed_click {
+                        let (name, args) = subprocess::parse_command(cmd);
+                        subprocess::spawn_child_async(name, &args)
+                            .block_error("music", "could not spawn child")?;
+                    }
                 }
-                Ok(())
+                Some(action) if !action.is_empty() => {
+                    let m = Message::new_method_call(self.player.as_ref().unwrap(),
+                        "/org/mpris/MediaPlayer2",
+                        "org.mpris.MediaPlayer2.Player",
+                        action)
+                        .block_error("music", "failed to create D-Bus method call")?;
+
+                    let _ = self.dbus_conn.send(m); // Swallow errors here.
+                }
+                _ => (),
             }
-        } else {
-            Ok(())
         }
+
+        Ok(())
     }
 
     fn view(&self) -> Vec<&dyn I3BarWidget> {
