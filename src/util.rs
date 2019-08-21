@@ -12,6 +12,7 @@ use std::fs::{File, OpenOptions};
 use std::io::BufReader;
 use std::io::prelude::*;
 use std::num::ParseIntError;
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
 pub fn xdg_config_home() -> PathBuf {
@@ -313,5 +314,15 @@ macro_rules! mapped_struct {
                 m
             }
         }
+    }
+}
+
+pub trait OptionDeref<T: Deref> {
+    fn as_deref(&self) -> Option<&T::Target>;
+}
+
+impl<T: Deref> OptionDeref<T> for Option<T> {
+    fn as_deref(&self) -> Option<&T::Target> {
+        self.as_ref().map(Deref::deref)
     }
 }
